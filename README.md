@@ -204,7 +204,5 @@ These are real issues encountered during the build — documented here as learni
 ---
 
 ## Author
-
-**Prakhar Sharma** — Virtual Desktops & Applications Engineer  
-Accenture @ Baptist Health South Florida  
+Prakhar Sharma
 [github.com/Prakhar0517](https://github.com/Prakhar0517)
