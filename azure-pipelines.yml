@@ -1,0 +1,147 @@
+trigger:
+- main
+
+pr:
+- main
+
+pool:
+  name: Default
+
+variables:
+  - name: TF_IN_AUTOMATION
+    value: "true"
+  - group: avd-secrets
+
+stages:
+
+- stage: Plan
+  displayName: "Terraform Plan"
+  jobs:
+  - job: plan
+    displayName: "Init + Validate + Plan"
+    steps:
+
+    - checkout: self
+
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: latest
+
+    - task: AzureCLI@2
+      displayName: "Verify Azure auth"
+      retryCountOnTaskFailure: 2
+      inputs:
+        azureSubscription: 'azure connect'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          Write-Host "=== Verifying Azure authentication ==="
+          az account show
+          Write-Host "=== Auth OK. Subscription: $(az account show --query name -o tsv) ==="
+
+    - task: AzureCLI@2
+      displayName: "Terraform init + validate + plan"
+      inputs:
+        azureSubscription: 'azure connect'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          $env:ARM_CLIENT_ID       = $env:servicePrincipalId
+          $env:ARM_CLIENT_SECRET   = $env:servicePrincipalKey
+          $env:ARM_TENANT_ID       = $env:tenantId
+          $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+          $env:TF_VAR_admin_password  = "$(admin_password)"
+          $env:TF_VAR_domain_password = "$(domain_password)"
+          $env:TF_VAR_user_password   = "$(user_password)"
+
+          Write-Host "=========================="
+          Write-Host "Checking TF variables..."
+          Write-Host "Admin password length  : $($env:TF_VAR_admin_password.Length)"
+          Write-Host "Domain password length : $($env:TF_VAR_domain_password.Length)"
+          Write-Host "User password length   : $($env:TF_VAR_user_password.Length)"
+          Write-Host "=========================="
+
+          cd "AVD ALL"
+          terraform init -input=false
+          terraform validate
+          terraform plan -input=false -no-color -out=tfplan
+
+    - task: PublishPipelineArtifact@1
+      displayName: "Publish plan artifact"
+      inputs:
+        targetPath: 'AVD ALL/tfplan'
+        artifact: 'tfplan'
+
+- stage: Apply
+  displayName: "Terraform Apply"
+  dependsOn: Plan
+  condition: >
+    and(
+      succeeded(),
+      ne(variables['Build.Reason'], 'PullRequest'),
+      eq(variables['Build.SourceBranch'], 'refs/heads/main')
+    )
+
+  jobs:
+  - deployment: apply
+    displayName: "Apply (requires approval)"
+    environment: prod-approval
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: latest
+
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download plan artifact"
+            inputs:
+              artifact: 'tfplan'
+              path: 'AVD ALL'
+
+          - task: AzureCLI@2
+            displayName: "Verify Azure auth"
+            retryCountOnTaskFailure: 2
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "=== Verifying Azure auth before apply ==="
+                az account show
+
+          - task: AzureCLI@2
+            displayName: "Terraform init + apply"
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                $env:ARM_CLIENT_ID       = $env:servicePrincipalId
+                $env:ARM_CLIENT_SECRET   = $env:servicePrincipalKey
+                $env:ARM_TENANT_ID       = $env:tenantId
+                $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+                $env:TF_VAR_admin_password  = "$(admin_password)"
+                $env:TF_VAR_domain_password = "$(domain_password)"
+                $env:TF_VAR_user_password   = "$(user_password)"
+
+                Write-Host "=========================="
+                Write-Host "Checking TF variables..."
+                Write-Host "Admin password length  : $($env:TF_VAR_admin_password.Length)"
+                Write-Host "Domain password length : $($env:TF_VAR_domain_password.Length)"
+                Write-Host "User password length   : $($env:TF_VAR_user_password.Length)"
+                Write-Host "=========================="
+
+                cd "AVD ALL"
+                terraform init -input=false
+                terraform apply -input=false -no-color tfplan
