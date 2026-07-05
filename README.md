@@ -11,41 +11,11 @@ This project is a personal infrastructure lab and learning challenge: design, bu
 **Current Phase:** Baseline infrastructure complete. Rebuilding with golden image pipeline (Packer + Ansible) — see [Roadmap](#roadmap).
 
 ---
-
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Azure Subscription                        │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                   Resource Group: avd                     │   │
-│  │                                                           │   │
-│  │   ┌─────────────┐    ┌──────────────┐   ┌────────────┐  │   │
-│  │   │  AVD        │    │  Host Pool   │   │  App       │  │   │
-│  │   │  Workspace  │───▶│  (Pooled)    │──▶│  Groups    │  │   │
-│  │   └─────────────┘    └──────────────┘   └────────────┘  │   │
-│  │                             │                             │   │
-│  │                    ┌────────▼─────────┐                  │   │
-│  │                    │  Session Hosts   │                  │   │
-│  │                    │  Windows 11      │                  │   │
-│  │                    │  Multi-Session   │                  │   │
-│  │                    └────────┬─────────┘                  │   │
-│  │                             │                             │   │
-│  │   ┌──────────────┐    ┌─────▼──────┐  ┌──────────────┐  │   │
-│  │   │  FSLogix     │    │  VNet /    │  │  Domain      │  │   │
-│  │   │  Storage     │    │  Subnet /  │  │  Controller  │  │   │
-│  │   │  (Private EP)│    │  NSG       │  │  dc-01       │  │   │
-│  │   └──────────────┘    └────────────┘  └──────────────┘  │   │
-│  │                                                           │   │
-│  │   ┌──────────────┐    ┌─────────────┐                    │   │
-│  │   │  Shared      │    │  Log        │                    │   │
-│  │   │  Image       │    │  Analytics  │                    │   │
-│  │   │  Gallery     │    │  Workspace  │                    │   │
-│  │   └──────────────┘    └─────────────┘                    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+![Azure AVD Lab Architecture](images/architecture.jpg)
 
+*Resource dependency map exported from Azure — shows all Terraform-managed resources and their relationships.*
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Azure DevOps Pipeline                        │
 │                                                                  │
