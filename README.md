@@ -174,7 +174,7 @@ These are real issues encountered during the build — documented here as learni
 
 ## Roadmap
 
-### July & Sepetember 2026 — Packer + Ansible + Full CI/CD
+### July - August 2026 (2-Month Plan) — Packer + Ansible + Full CI/CD
 
 **Phase 1 — Golden Image Pipeline**
 - [ ] Packer HCL template targeting Azure, outputting to `sig_test_avd_eus_001`
