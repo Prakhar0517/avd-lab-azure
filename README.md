@@ -12,12 +12,8 @@ This project is a personal infrastructure lab and learning challenge: design, bu
 
 ---
 
-## Architecture
 
 ```
-![Azure AVD Lab Architecture](images/architecture.jpg)
-
-*Resource dependency map exported from Azure — shows all Terraform-managed resources and their relationships.*
 
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Azure DevOps Pipeline                        │
