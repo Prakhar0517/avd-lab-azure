@@ -26,8 +26,10 @@ This project is a personal infrastructure lab and learning challenge: design, bu
 
 ---
 
-## What's Built
+# What's Built
 
+## What's Built
+ 
 ### Core Infrastructure (Terraform)
 | Component | Resource | Details |
 |---|---|---|
@@ -41,6 +43,7 @@ This project is a personal infrastructure lab and learning challenge: design, bu
 | Images | Shared Image Gallery | `sig_test_avd_eus_001` with image definition |
 | Monitoring | Log Analytics Workspace | Session host diagnostics |
 | State | Azure Blob Storage | Remote Terraform state (`storageterraform0517`) |
+ 
 
 ### Domain & Identity
 - Domain Controller (`dc-01.avd.lab`) — the only manually provisioned resource; required as a prerequisite for domain join
@@ -144,7 +147,7 @@ These are real issues encountered during the build — documented here as learni
 
 ## Roadmap
 
-### July - August 2026 (2-Month Plan) — Packer + Ansible + Full CI/CD
+### July 2026 — Packer + Ansible + Full CI/CD
 
 **Phase 1 — Golden Image Pipeline**
 - [ ] Packer HCL template targeting Azure, outputting to `sig_test_avd_eus_001`
@@ -174,5 +177,7 @@ These are real issues encountered during the build — documented here as learni
 ---
 
 ## Author
-Prakhar Sharma
+
+**Prakhar Sharma** — Virtual Desktops & Applications Engineer  
+Accenture @ Baptist Health South Florida  
 [github.com/Prakhar0517](https://github.com/Prakhar0517)
