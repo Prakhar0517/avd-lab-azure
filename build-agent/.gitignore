@@ -1,0 +1,7 @@
+# Local-only: contains this laptop's SSH public key. Recreate on a fresh
+# clone (see README.md) rather than committing it.
+terraform.tfvars
+
+# Provider plugin cache - root .gitignore only covers *.tfstate*, not this
+# (mirrors "AVD ALL/.gitignore", which has the same line for the same reason).
+.terraform/

@@ -1,0 +1,50 @@
+trigger: none
+pr: none
+
+variables:
+- name: TF_IN_AUTOMATION
+  value: "true"
+
+stages:
+- stage: __default
+  jobs:
+  - job: Job
+    pool:
+      name: Default
+    steps:
+    - checkout: self
+
+    - task: TerraformInstaller@1
+      displayName: Install Terraform
+      inputs:
+        terraformVersion: 1.9.x   # match whatever main-apply pins to
+
+    # Only keep this if domain_name/domain_user_upn/domain_password/user_password
+    # turn out to still be genuinely needed post-Entra ID join
+    - task: AzureKeyVault@2
+      displayName: Fetch domain/user secrets
+      inputs:
+        azureSubscription: 'azure connect'
+        KeyVaultName: 'kv-avd-secrets-0517'
+        SecretsFilter: 'domain-name,domain-user-upn,domain-password,user-password'
+
+    - task: AzureCLI@2
+      displayName: "Terraform: fmt, validate, init, plan (NO APPLY)"
+      inputs:
+        azureSubscription: 'azure connect'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        workingDirectory: 'AVD ALL'
+        inlineScript: |-
+          terraform --version
+          terraform fmt -check -recursive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          terraform init -input=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          terraform validate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          terraform plan -input=false -no-color -out=tfplan `
+            -var "domain_name=$(domain-name)" `
+            -var "domain_user_upn=$(domain-user-upn)" `
+            -var "domain_password=$(domain-password)" `
+            -var "user_password=$(user-password)"

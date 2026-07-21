@@ -1,0 +1,145 @@
+#cloud-config
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - git
+  - curl
+  - unzip
+  - jq
+  - python3-pip
+
+users:
+  - name: adoagent
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: false
+
+write_files:
+  - path: /opt/provision-ado-agent.sh
+    owner: root:root
+    permissions: '0700'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      exec > >(tee -a /var/log/ado-agent-provision.log) 2>&1
+      echo "=== ADO build agent provisioning starting: $(date -u) ==="
+
+      # ---- Azure CLI ----
+      curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
+      # ---- Packer (HashiCorp apt repo) ----
+      # --batch --yes makes gpg overwrite the keyring non-interactively - without
+      # it, a second run prompts "File exists, overwrite?" on /dev/tty, which
+      # doesn't exist under cloud-init and kills the pipe with a SIGPIPE-style
+      # curl write error.
+      curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor --batch --yes -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+      echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/hashicorp.list
+      apt-get update -y
+      apt-get install -y packer
+
+      # ---- Ansible + WinRM, for Packer's ansible provisioner against Windows temp VMs ----
+      pip3 install --no-cache-dir ansible pywinrm
+
+      # ---- Azure DevOps agent tarball ----
+      # The agent tarball is NOT attached as a GitHub release asset (asset
+      # list is empty) - the real download lives on download.agent.dev.azure.com,
+      # keyed by the version number from the release tag. Resolve that
+      # version from the GitHub API, then verify the constructed URL actually
+      # answers before trusting it. If either step fails, fall back to a
+      # pinned known-good version - safe because the agent self-updates after
+      # registration, so the pin only has to get the box bootstrapped.
+      FALLBACK_VERSION="5.275.0"
+      mkdir -p /opt/ado-agent
+
+      VER=$(curl -fsSL https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest \
+        | jq -r '.tag_name' | sed 's/^v//')
+      AGENT_URL="https://download.agent.dev.azure.com/agent/$VER/vsts-agent-linux-x64-$VER.tar.gz"
+
+      if [ -z "$VER" ] || [ "$VER" = "null" ] || ! curl -fsIL "$AGENT_URL" >/dev/null; then
+        echo "Could not resolve/verify latest agent version ($VER) - falling back to pinned $FALLBACK_VERSION."
+        VER="$FALLBACK_VERSION"
+        AGENT_URL="https://download.agent.dev.azure.com/agent/$VER/vsts-agent-linux-x64-$VER.tar.gz"
+        if ! curl -fsIL "$AGENT_URL" >/dev/null; then
+          echo "ERROR: could not resolve latest vsts-agent-linux-x64 download URL, and pinned fallback $FALLBACK_VERSION also failed" >&2
+          exit 1
+        fi
+      fi
+
+      curl -fsSL -o /opt/ado-agent/agent.tar.gz "$AGENT_URL"
+      tar zxf /opt/ado-agent/agent.tar.gz -C /opt/ado-agent
+      rm -f /opt/ado-agent/agent.tar.gz
+      chown -R adoagent:adoagent /opt/ado-agent
+
+      # ---- Register the agent (skipped if already configured) ----
+      # Agent.Listener (config.sh) refuses to run --unattended against an
+      # already-configured agent directory without --replace, and there's no
+      # tty for it to prompt on - so on a rerun this must be skipped entirely
+      # rather than invoked again. /opt/ado-agent/.agent is the settings file
+      # config.sh itself writes on success, so its presence is a reliable
+      # "already registered" marker.
+      if [ -f /opt/ado-agent/.agent ]; then
+      echo "Agent already configured (/opt/ado-agent/.agent exists) - skipping PAT fetch and registration."
+      else
+      # Key Vault RBAC role assignment propagation can lag first boot by
+      # several minutes, so retry for up to ~12 minutes before giving up.
+      PAT=""
+      for attempt in $(seq 1 24); do
+        if az login --identity >/dev/null 2>&1; then
+          PAT="$(az keyvault secret show \
+            --vault-name "${vault_name}" \
+            --name "${pat_secret_name}" \
+            --query value -o tsv 2>/dev/null || true)"
+        fi
+        if [ -n "$PAT" ]; then
+          echo "Retrieved agent PAT from Key Vault (attempt $attempt/24)."
+          break
+        fi
+        echo "Key Vault secret not yet available (attempt $attempt/24) - retrying in 30s..."
+        sleep 30
+      done
+
+      if [ -z "$PAT" ]; then
+        echo "ERROR: failed to retrieve ${pat_secret_name} from ${vault_name} after 12 minutes - aborting." >&2
+        exit 1
+      fi
+
+      # PAT is handed off via env var only, into a subshell's environment -
+      # never echoed, never written to disk. config.sh persists its own
+      # derived OAuth credential, not the PAT.
+      su - adoagent -s /bin/bash <<EOSU
+      set -euo pipefail
+      cd /opt/ado-agent
+      export VSTS_AGENT_INPUT_TOKEN='$PAT'
+      ./config.sh --unattended \
+        --url "${ado_org_url}" \
+        --auth pat \
+        --pool "${agent_pool}" \
+        --agent "${agent_name}" \
+        --acceptTeeEula
+      unset VSTS_AGENT_INPUT_TOKEN
+      EOSU
+
+      unset PAT
+      fi
+
+      # ---- Install (if not already) + start as a systemd service (runs as adoagent) ----
+      # svc.sh install hard-fails ("error: exists <unit path>") if the unit
+      # file is already there - it has no overwrite/force mode - so guard it
+      # the same way. svc.sh start is already idempotent (systemctl start on
+      # an active unit just succeeds), so it always runs.
+      cd /opt/ado-agent
+      if [ -f /opt/ado-agent/.service ]; then
+      echo "Agent service already installed - skipping install."
+      else
+      ./svc.sh install adoagent
+      fi
+      ./svc.sh start
+
+      echo "=== ADO build agent provisioning complete: $(date -u) ==="
+
+runcmd:
+  - /opt/provision-ado-agent.sh

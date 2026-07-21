@@ -1,0 +1,141 @@
+# Phase 2c — Packer golden image build pipeline.
+# See CLAUDE.md ("Hard-Won Lessons" + "image-pipeline.yml" section) for the
+# ARM_* env var pattern, and why -vvvv must never be added back to the
+# ansible provisioner (it leaks the injected password).
+#
+# Runs on the dedicated Linux build agent (pool linux-build, vm-build-agent-01
+# — see build-agent/) — packer, ansible, and pywinrm are preinstalled there.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - packer
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - packer
+
+# Manual "Run pipeline" runs in the ADO UI are always available regardless of
+# the path/branch filters above - those only gate automatic triggering.
+
+pool:
+  name: linux-build
+
+stages:
+
+- stage: Validate
+  displayName: "Validate Packer Template"
+  jobs:
+  - job: validate
+    displayName: "Preflight + Packer Validate"
+    steps:
+
+    - checkout: self
+
+    - bash: |
+        set -euo pipefail
+        missing=0
+
+        if ! command -v packer >/dev/null; then
+          echo "##vso[task.logissue type=error]packer not found on this agent."
+          missing=1
+        fi
+
+        if ! command -v ansible-playbook >/dev/null; then
+          echo "##vso[task.logissue type=error]ansible-playbook not found on this agent."
+          missing=1
+        fi
+
+        if ! python3 -c "import winrm" 2>/dev/null; then
+          echo "##vso[task.logissue type=error]pywinrm python package not found on this agent (pip3 install pywinrm)."
+          missing=1
+        fi
+
+        if [ "$missing" -ne 0 ]; then
+          echo "Agent prerequisite check FAILED - see errors above."
+          exit 1
+        fi
+
+        echo "Agent prerequisites OK."
+
+        cd "$(Build.SourcesDirectory)/packer"
+        packer init .
+        packer validate .
+      displayName: "Preflight check + Packer init/validate"
+
+- stage: BuildImage
+  displayName: "Build Golden Image"
+  dependsOn: Validate
+  condition: >
+    and(
+      succeeded(),
+      ne(variables['Build.Reason'], 'PullRequest'),
+      eq(variables['Build.SourceBranch'], 'refs/heads/main')
+    )
+
+  jobs:
+  - deployment: build
+    displayName: "Packer Build (requires approval)"
+    environment: prod-approval
+    timeoutInMinutes: 60
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Verify Azure auth"
+            retryCountOnTaskFailure: 2
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "=== Verifying Azure auth before Packer build ==="
+                az account show
+
+          - task: AzureCLI@2
+            displayName: "Packer build"
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # MSI is selected by the packer azure-arm plugin ONLY when
+                # client_id, client_secret, client_jwt, client_cert_path,
+                # use_azure_cli_auth, oidc_* AND tenant_id are all unset - the
+                # plugin's "No valid set of authentication values specified"
+                # error omits tenant_id from its list, which is exactly how
+                # run 20260719.1 failed (ARM_TENANT_ID was exported, the
+                # template's tenant_id = env("ARM_TENANT_ID") picked it up,
+                # and UseMSI() went false). The plugin resolves the tenant
+                # itself from subscription_id. Export ONLY
+                # ARM_SUBSCRIPTION_ID.
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                cd "$(Build.SourcesDirectory)/packer"
+                packer init .
+
+                mkdir -p "$(Build.ArtifactStagingDirectory)"
+
+                # pipefail is required here: without it, a failed `packer
+                # build` piped into `tee` still reports exit 0 (tee's own
+                # exit code), silently masking a build failure from the CI job.
+                set -o pipefail
+                packer build -var image_version=1.0.$(Build.BuildId) . 2>&1 | tee "$(Build.ArtifactStagingDirectory)/packer-build.log"
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Packer build log"
+            condition: always()
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/packer-build.log'
+              artifact: 'packer-build-log'

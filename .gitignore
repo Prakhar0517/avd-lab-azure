@@ -1,3 +1,25 @@
-.terraform/
+# Terraform
+**/.terraform/*
 *.tfstate
 *.tfstate.*
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+
+# Packer
+packer_cache/
+
+# Secrets / keys
+*.pem
+*.pfx
+*.key
+.env
+
+# Internal notes — not for the public mirror
+CLAUDE.md
+
+# OS/editor
+.DS_Store
+Thumbs.db

@@ -1,0 +1,166 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# TERRAFORM DESTROY PIPELINE
+# ══════════════════════════════════════════════════════════════════════════════
+# This pipeline is intentionally NOT triggered by git push or PR.
+# It only runs when someone manually starts it from the Azure DevOps UI
+# and types the confirmation phrase. This is by design — destroy should
+# never be one accidental click away.
+# ══════════════════════════════════════════════════════════════════════════════
+
+trigger: none      # ← no CI trigger. Ever.
+pr: none           # ← no PR trigger. Ever.
+
+pool:
+  name: Default
+
+variables:
+  TF_IN_AUTOMATION: "true"
+
+# ── Manual confirmation gate ───────────────────────────────────────────────
+# When you click "Run pipeline" in the UI, Azure DevOps will prompt for this
+# variable because it has no default. You must type the exact phrase below
+# or the pipeline refuses to proceed past the guard step.
+parameters:
+- name: confirmDestroy
+  displayName: 'Type "destroy-avd-demo" to confirm you want to DESTROY infrastructure'
+  type: string
+  default: ''
+
+stages:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 1 — Guard + Destroy Plan
+# ══════════════════════════════════════════════════════════════════════════════
+- stage: DestroyPlan
+  displayName: "Destroy Plan"
+  jobs:
+  - job: guard_and_plan
+    displayName: "Confirm + Plan Destroy"
+    steps:
+
+    - checkout: self
+
+    # ── Hard stop if confirmation phrase doesn't match ────────────────────
+    - task: PowerShell@2
+      displayName: "Safety check: confirm phrase"
+      inputs:
+        targetType: 'inline'
+        script: |
+          $expected = "destroy-avd-demo"
+          $given    = "${{ parameters.confirmDestroy }}"
+          if ($given -ne $expected) {
+            Write-Host "##vso[task.logissue type=error]Confirmation phrase did not match. Expected '$expected', got '$given'. Aborting."
+            Write-Host "##vso[task.complete result=Failed;]"
+            exit 1
+          }
+          Write-Host "Confirmation phrase matched. Proceeding to destroy plan."
+
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: latest
+
+    - task: AzureCLI@2
+      displayName: "Verify Azure auth"
+      retryCountOnTaskFailure: 2
+      inputs:
+        azureSubscription: 'azure connect'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          Write-Host "=== Verifying Azure authentication ==="
+          az account show
+
+    # ── Generate destroy plan (read-only, shows what WOULD be deleted) ────
+    - task: AzureCLI@2
+      displayName: "Terraform init + destroy plan"
+      inputs:
+        azureSubscription: 'azure connect'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+          $env:ARM_CLIENT_ID       = $env:servicePrincipalId
+          $env:ARM_CLIENT_SECRET   = $env:servicePrincipalKey
+          $env:ARM_TENANT_ID       = $env:tenantId
+          $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+          cd "AVD ALL"
+          terraform init -input=false
+          terraform plan -destroy -input=false -no-color -out=tfdestroyplan
+
+          Write-Host ""
+          Write-Host "=== Resources that WILL BE DESTROYED if you approve ==="
+          terraform show -no-color tfdestroyplan
+
+    - task: PublishPipelineArtifact@1
+      displayName: "Publish destroy plan artifact"
+      inputs:
+        targetPath: 'AVD ALL/tfdestroyplan'
+        artifact: 'tfdestroyplan'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 2 — Destroy Apply (requires manual approval in environment)
+# ══════════════════════════════════════════════════════════════════════════════
+- stage: DestroyApply
+  displayName: "Destroy Apply"
+  dependsOn: DestroyPlan
+  condition: succeeded()
+
+  jobs:
+  - deployment: destroy
+    displayName: "Apply Destroy (requires approval)"
+    # ── Use a DIFFERENT environment than your normal apply ────────────────
+    # Set this up in Azure DevOps under Pipelines > Environments.
+    # Give it its own approvers list — ideally a smaller, more senior group
+    # than your regular prod-approval gate, since this is irreversible.
+    environment: prod-destroy-approval
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: latest
+
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download destroy plan artifact"
+            inputs:
+              artifact: 'tfdestroyplan'
+              path: 'AVD ALL'
+
+          - task: AzureCLI@2
+            displayName: "Verify Azure auth"
+            retryCountOnTaskFailure: 2
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "=== Verifying Azure auth before destroy ==="
+                az account show
+
+          - task: AzureCLI@2
+            displayName: "Terraform init + destroy apply"
+            inputs:
+              azureSubscription: 'azure connect'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                $env:ARM_CLIENT_ID       = $env:servicePrincipalId
+                $env:ARM_CLIENT_SECRET   = $env:servicePrincipalKey
+                $env:ARM_TENANT_ID       = $env:tenantId
+                $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+                cd "AVD ALL"
+                terraform init -input=false
+                # Apply the EXACT destroy plan that was reviewed and approved
+                terraform apply -input=false -no-color tfdestroyplan
+
+                Write-Host ""
+                Write-Host "=== Destroy complete ==="
