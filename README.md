@@ -55,7 +55,7 @@ demonstration of how far that requirement can genuinely be pushed.
 
 ```mermaid
 flowchart TD
-    Dev["Developer<br/>VS Code + Claude Code"] -->|git push / PR| Repo["Azure DevOps Repo"]
+    Dev["Developer<br/>VS Code"] -->|git push / PR| Repo["Azure DevOps Repo"]
     Repo -->|PR opened| Validate["Plan / Validate stage"]
     Validate -->|merge to main| Approval{"Manual Approval"}
     Approval -->|Terraform change| TFApply["Terraform Apply<br/>auth: Workload Identity Federation"]
@@ -190,7 +190,7 @@ Apply flow described above.
 
 ## License
 
-Not yet set — add a `LICENSE` file to declare terms for reuse.
+Not yet set.
 
 ---
 
